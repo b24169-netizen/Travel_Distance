@@ -5,12 +5,15 @@ from io import BytesIO
 st.set_page_config(layout="wide")
 st.title("EMS Customer Invoice Generator")
 
+# -----------------------------
+# Upload File
+# -----------------------------
 uploaded_file = st.file_uploader("Upload EMS Excel File", type=["xlsx"])
 
 if uploaded_file:
     df = pd.read_excel(uploaded_file)
 
-    st.subheader("Raw Data")
+    st.subheader("Raw Data Preview")
     st.dataframe(df.head())
 
     # -----------------------------
@@ -23,12 +26,34 @@ if uploaded_file:
     duration_col = st.sidebar.selectbox("Duration Column", df.columns)
 
     # -----------------------------
-    # Select Customer
+    # CLEAN DATA (VERY IMPORTANT)
     # -----------------------------
-    customers = df[customer_col].dropna().unique()
-    selected_customer = st.selectbox("Select Customer", sorted(customers))
+    df[customer_col] = df[customer_col].astype(str).str.strip().str.lower()
+    df[employee_col] = df[employee_col].astype(str).str.strip()
 
-    cust_df = df[df[customer_col] == selected_customer].copy()
+    # -----------------------------
+    # Customer Selection
+    # -----------------------------
+    customers = sorted(df[customer_col].dropna().unique())
+    selected_customer = st.selectbox("Select Customer", customers)
+
+    selected_customer_clean = selected_customer.strip().lower()
+
+    # -----------------------------
+    # Filter Data
+    # -----------------------------
+    cust_df = df[df[customer_col] == selected_customer_clean].copy()
+
+    # -----------------------------
+    # DEBUG (IMPORTANT)
+    # -----------------------------
+    st.write("Rows found for selected customer:", len(cust_df))
+    st.write("Sample filtered data:")
+    st.dataframe(cust_df.head())
+
+    if len(cust_df) == 0:
+        st.error("No data found. Please check column selection.")
+        st.stop()
 
     # -----------------------------
     # Convert Duration → Hours
@@ -39,13 +64,16 @@ if uploaded_file:
 
         x = str(x).strip()
 
+        # Case 1: numeric minutes
         if x.replace('.', '', 1).isdigit():
             return float(x) / 60
 
+        # Case 2: contains 'min'
         if "min" in x.lower():
             num = ''.join(filter(str.isdigit, x))
             return float(num) / 60 if num else 0
 
+        # Case 3: time format
         try:
             t = pd.to_timedelta(x)
             return t.total_seconds() / 3600
@@ -53,6 +81,9 @@ if uploaded_file:
             return 0
 
     cust_df["Hours"] = cust_df[duration_col].apply(convert_to_hours)
+
+    st.write("Converted Hours Sample:")
+    st.dataframe(cust_df[[duration_col, "Hours"]].head())
 
     # -----------------------------
     # Group by Employee
@@ -62,7 +93,7 @@ if uploaded_file:
         Hours=("Hours", "sum")
     ).reset_index()
 
-    st.subheader(f"Employees serving {selected_customer}")
+    st.subheader("Employees Serving Customer")
     st.dataframe(summary)
 
     # -----------------------------
@@ -99,15 +130,19 @@ if uploaded_file:
         }
 
     # -----------------------------
-    # Calculate Costs
+    # Travel Rate
     # -----------------------------
     travel_rate = st.number_input("Travel Rate per KM (£)", value=0.5)
 
-    costs = []
+    # -----------------------------
+    # Cost Calculation
+    # -----------------------------
+    results = []
 
     for i, row in summary.iterrows():
         emp = row[employee_col]
         hours = row["Hours"]
+        visits = row["Visits"]
 
         rate = employee_inputs[emp]["rate"]
         distance = employee_inputs[emp]["distance"]
@@ -116,16 +151,16 @@ if uploaded_file:
         travel_cost = distance * travel_rate
         total_cost = care_cost + travel_cost
 
-        costs.append([
+        results.append([
             emp,
-            row["Visits"],
+            visits,
             hours,
             rate,
             distance,
             total_cost
         ])
 
-    result_df = pd.DataFrame(costs, columns=[
+    result_df = pd.DataFrame(results, columns=[
         "Employee", "Visits", "Hours", "Rate", "Distance", "Total Cost"
     ])
 
@@ -138,19 +173,18 @@ if uploaded_file:
     # -----------------------------
     # Excel Download
     # -----------------------------
-    def generate_invoice(df):
+    def generate_excel(df):
         output = BytesIO()
-
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
             df.to_excel(writer, sheet_name="Invoice", index=False)
-
         output.seek(0)
         return output
 
-    invoice_file = generate_invoice(result_df)
+    excel_file = generate_excel(result_df)
 
     st.download_button(
-        "Download Invoice",
-        data=invoice_file,
-        file_name=f"{selected_customer}_invoice.xlsx"
+        label="Download Invoice",
+        data=excel_file,
+        file_name=f"{selected_customer}_invoice.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
