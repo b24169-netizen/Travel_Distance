@@ -5,15 +5,12 @@ from io import BytesIO
 st.set_page_config(layout="wide")
 st.title("EMS Customer Invoice Generator")
 
-# -----------------------------
-# Upload File
-# -----------------------------
 uploaded_file = st.file_uploader("Upload EMS Excel File", type=["xlsx"])
 
 if uploaded_file:
     df = pd.read_excel(uploaded_file)
 
-    st.subheader("Raw Data Preview")
+    st.subheader("Raw Data")
     st.dataframe(df.head())
 
     # -----------------------------
@@ -23,7 +20,6 @@ if uploaded_file:
 
     customer_col = st.sidebar.selectbox("Customer Column", df.columns)
     employee_col = st.sidebar.selectbox("Employee Column", df.columns)
-    date_col = st.sidebar.selectbox("Date Column", df.columns)
     duration_col = st.sidebar.selectbox("Duration Column", df.columns)
 
     # -----------------------------
@@ -32,132 +28,129 @@ if uploaded_file:
     customers = df[customer_col].dropna().unique()
     selected_customer = st.selectbox("Select Customer", sorted(customers))
 
-    # -----------------------------
-    # Rate Input
-    # -----------------------------
-    st.sidebar.header("Rate Input")
-    rate_per_hour = st.sidebar.number_input("Rate per Hour (£)", value=15.0)
-
-    # -----------------------------
-    # Filter Data
-    # -----------------------------
     cust_df = df[df[customer_col] == selected_customer].copy()
 
     # -----------------------------
-    # SAFE Duration Conversion (Fixes your error)
+    # Convert Duration → Hours
     # -----------------------------
     def convert_to_hours(x):
-        try:
-            # Case 1: numeric minutes
+        if pd.isna(x):
+            return 0
+
+        x = str(x).strip()
+
+        if x.replace('.', '', 1).isdigit():
             return float(x) / 60
+
+        if "min" in x.lower():
+            num = ''.join(filter(str.isdigit, x))
+            return float(num) / 60 if num else 0
+
+        try:
+            t = pd.to_timedelta(x)
+            return t.total_seconds() / 3600
         except:
-            try:
-                # Case 2: time format HH:MM:SS
-                t = pd.to_timedelta(x)
-                return t.total_seconds() / 3600
-            except:
-                return 0
+            return 0
 
     cust_df["Hours"] = cust_df[duration_col].apply(convert_to_hours)
 
     # -----------------------------
-    # Summary Calculation
+    # Group by Employee
     # -----------------------------
     summary = cust_df.groupby(employee_col).agg(
         Visits=(employee_col, "count"),
         Hours=("Hours", "sum")
     ).reset_index()
 
-    summary["Rate"] = rate_per_hour
-    summary["Cost"] = summary["Hours"] * rate_per_hour
-
-    total_cost = summary["Cost"].sum()
-
-    # -----------------------------
-    # Display
-    # -----------------------------
-    st.subheader(f"Invoice Preview: {selected_customer}")
+    st.subheader(f"Employees serving {selected_customer}")
     st.dataframe(summary)
 
-    st.success(f"Total Cost: £{round(total_cost, 2)}")
+    # -----------------------------
+    # USER INPUT PER EMPLOYEE
+    # -----------------------------
+    st.subheader("Enter Rate & Distance for Each Employee")
 
-    st.subheader("Detailed Visits")
-    st.dataframe(cust_df)
+    employee_inputs = {}
+
+    for i, row in summary.iterrows():
+        emp = row[employee_col]
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+            rate = st.number_input(
+                f"Rate (£/hr) - {emp}",
+                min_value=0.0,
+                value=15.0,
+                key=f"rate_{i}"
+            )
+
+        with col2:
+            distance = st.number_input(
+                f"Distance (KM) - {emp}",
+                min_value=0.0,
+                value=0.0,
+                key=f"dist_{i}"
+            )
+
+        employee_inputs[emp] = {
+            "rate": rate,
+            "distance": distance
+        }
 
     # -----------------------------
-    # Generate Formatted Excel Invoice
+    # Calculate Costs
     # -----------------------------
-    def generate_invoice(summary_df, detail_df):
+    travel_rate = st.number_input("Travel Rate per KM (£)", value=0.5)
+
+    costs = []
+
+    for i, row in summary.iterrows():
+        emp = row[employee_col]
+        hours = row["Hours"]
+
+        rate = employee_inputs[emp]["rate"]
+        distance = employee_inputs[emp]["distance"]
+
+        care_cost = hours * rate
+        travel_cost = distance * travel_rate
+        total_cost = care_cost + travel_cost
+
+        costs.append([
+            emp,
+            row["Visits"],
+            hours,
+            rate,
+            distance,
+            total_cost
+        ])
+
+    result_df = pd.DataFrame(costs, columns=[
+        "Employee", "Visits", "Hours", "Rate", "Distance", "Total Cost"
+    ])
+
+    st.subheader("Final Cost Table")
+    st.dataframe(result_df)
+
+    grand_total = result_df["Total Cost"].sum()
+    st.success(f"Grand Total: £{round(grand_total, 2)}")
+
+    # -----------------------------
+    # Excel Download
+    # -----------------------------
+    def generate_invoice(df):
         output = BytesIO()
 
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-            workbook = writer.book
-            sheet = workbook.add_worksheet("Invoice")
-            writer.sheets["Invoice"] = sheet
-
-            # Formats
-            bold = workbook.add_format({'bold': True})
-            title = workbook.add_format({'bold': True, 'font_size': 16})
-            money = workbook.add_format({'num_format': '£#,##0.00'})
-
-            # -----------------------------
-            # Header
-            # -----------------------------
-            sheet.write("A1", "INVOICE", title)
-
-            sheet.write("A3", "Customer:", bold)
-            sheet.write("B3", selected_customer)
-
-            sheet.write("A4", "Total Cost:", bold)
-            sheet.write("B4", total_cost, money)
-
-            # -----------------------------
-            # Table Header
-            # -----------------------------
-            start_row = 6
-            headers = ["Employee", "Visits", "Hours", "Rate (£)", "Cost (£)"]
-
-            for col, h in enumerate(headers):
-                sheet.write(start_row, col, h, bold)
-
-            # -----------------------------
-            # Table Data
-            # -----------------------------
-            for i, row in summary_df.iterrows():
-                sheet.write(start_row + 1 + i, 0, row[employee_col])
-                sheet.write(start_row + 1 + i, 1, row["Visits"])
-                sheet.write(start_row + 1 + i, 2, row["Hours"])
-                sheet.write(start_row + 1 + i, 3, row["Rate"])
-                sheet.write(start_row + 1 + i, 4, row["Cost"], money)
-
-            # -----------------------------
-            # Grand Total
-            # -----------------------------
-            end_row = start_row + len(summary_df) + 2
-            sheet.write(end_row, 3, "Grand Total", bold)
-            sheet.write(end_row, 4, total_cost, money)
-
-            # -----------------------------
-            # Detailed Sheet
-            # -----------------------------
-            detail_df.to_excel(writer, sheet_name="Detailed Visits", index=False)
-
-            # Adjust column width
-            sheet.set_column("A:A", 25)
-            sheet.set_column("B:E", 15)
+            df.to_excel(writer, sheet_name="Invoice", index=False)
 
         output.seek(0)
         return output
 
-    # Generate file
-    invoice_file = generate_invoice(summary, cust_df)
+    invoice_file = generate_invoice(result_df)
 
-    # -----------------------------
-    # Download Button
-    # -----------------------------
     st.download_button(
-        label="Download Invoice Excel",
+        "Download Invoice",
         data=invoice_file,
-        file_name=f"{selected_customer}_invoice.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        file_name=f"{selected_customer}_invoice.xlsx"
     )
