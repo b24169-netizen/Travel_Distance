@@ -13,8 +13,17 @@ uploaded_file = st.file_uploader("Upload EMS Excel File", type=["xlsx"])
 if uploaded_file:
     df = pd.read_excel(uploaded_file)
 
-    st.subheader("Raw Data Preview")
+    st.subheader("Preview of Uploaded Data")
     st.dataframe(df.head())
+
+    # -----------------------------
+    # Show column samples (IMPORTANT)
+    # -----------------------------
+    st.subheader("Column Value Preview (Use this to pick correct columns)")
+
+    for col in df.columns:
+        st.write(f"🔹 {col}")
+        st.write(df[col].dropna().unique()[:5])
 
     # -----------------------------
     # Column Mapping
@@ -26,7 +35,7 @@ if uploaded_file:
     duration_col = st.sidebar.selectbox("Duration Column", df.columns)
 
     # -----------------------------
-    # CLEAN DATA (VERY IMPORTANT)
+    # Clean Data
     # -----------------------------
     df[customer_col] = df[customer_col].astype(str).str.strip().str.lower()
     df[employee_col] = df[employee_col].astype(str).str.strip()
@@ -44,16 +53,17 @@ if uploaded_file:
     # -----------------------------
     cust_df = df[df[customer_col] == selected_customer_clean].copy()
 
-    # -----------------------------
-    # DEBUG (IMPORTANT)
-    # -----------------------------
-    st.write("Rows found for selected customer:", len(cust_df))
-    st.write("Sample filtered data:")
-    st.dataframe(cust_df.head())
+    st.write("Rows found:", len(cust_df))
 
-    if len(cust_df) == 0:
-        st.error("No data found. Please check column selection.")
+    if cust_df.empty:
+        st.error("No data found — check your Customer Column selection")
         st.stop()
+
+    # -----------------------------
+    # Show employee values (DEBUG)
+    # -----------------------------
+    st.subheader("Employees Found (Check if correct)")
+    st.write(cust_df[employee_col].unique())
 
     # -----------------------------
     # Convert Duration → Hours
@@ -64,16 +74,13 @@ if uploaded_file:
 
         x = str(x).strip()
 
-        # Case 1: numeric minutes
         if x.replace('.', '', 1).isdigit():
             return float(x) / 60
 
-        # Case 2: contains 'min'
         if "min" in x.lower():
             num = ''.join(filter(str.isdigit, x))
             return float(num) / 60 if num else 0
 
-        # Case 3: time format
         try:
             t = pd.to_timedelta(x)
             return t.total_seconds() / 3600
@@ -82,7 +89,7 @@ if uploaded_file:
 
     cust_df["Hours"] = cust_df[duration_col].apply(convert_to_hours)
 
-    st.write("Converted Hours Sample:")
+    st.subheader("Duration Conversion Check")
     st.dataframe(cust_df[[duration_col, "Hours"]].head())
 
     # -----------------------------
@@ -93,11 +100,11 @@ if uploaded_file:
         Hours=("Hours", "sum")
     ).reset_index()
 
-    st.subheader("Employees Serving Customer")
+    st.subheader("Employee Summary")
     st.dataframe(summary)
 
     # -----------------------------
-    # USER INPUT PER EMPLOYEE
+    # Per Employee Inputs
     # -----------------------------
     st.subheader("Enter Rate & Distance for Each Employee")
 
@@ -164,14 +171,14 @@ if uploaded_file:
         "Employee", "Visits", "Hours", "Rate", "Distance", "Total Cost"
     ])
 
-    st.subheader("Final Cost Table")
+    st.subheader("Final Invoice Table")
     st.dataframe(result_df)
 
     grand_total = result_df["Total Cost"].sum()
     st.success(f"Grand Total: £{round(grand_total, 2)}")
 
     # -----------------------------
-    # Excel Download
+    # Download Excel
     # -----------------------------
     def generate_excel(df):
         output = BytesIO()
